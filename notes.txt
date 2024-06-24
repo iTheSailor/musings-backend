@@ -1,0 +1,13 @@
+we're switching from weather.gov to https://open-meteo.com/en/docs for our weather api calls 
+due to fact that they offer far more services than we have access to with weather.gov.
+    -elevation
+    -historical weather
+    -climate change
+    -air quality etc.
+
+need to fix existing issues with a KeyError when choosing between zip and address
+would love to find a new provider for address geocoding as well.
+good potential is https://www.geoapify.com.
+
+would love to integrate their reachability feature 
+https://apidocs.geoapify.com/playground/geometry/

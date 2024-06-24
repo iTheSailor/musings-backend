@@ -1,0 +1,786 @@
+##BACKEND
+##models.py
+
+from django.db import models
+from django.contrib.auth.models import User
+import json
+
+# Create your models here.
+class UserLocation(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='api_user_locations')
+    address = models.CharField(max_length=250)
+    nickname = models.CharField(max_length=250, blank=True, null=True)
+    lat = models.CharField(max_length=100)
+    lon = models.CharField(max_length=100)
+    timezone = models.CharField(max_length=100, blank=True, null=True)
+    country_code = models.CharField(max_length=100, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        if not self.nickname: 
+            self.nickname = self.address
+        super(UserLocation, self).save(*args, **kwargs)
+
+    def __str__(self):
+        return f'{self.user.username} - {self.nickname}'
+    
+
+##views.py
+
+from django.shortcuts import render
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from . import forecast
+from .models import UserLocation
+from django.contrib.auth.models import User
+import json
+
+# Create your views here.
+
+class WeatherView(APIView):
+    def get(self, request, format=None):
+        search = json.dumps(request.GET)
+        search = json.loads(search)
+        data = forecast.location(search)
+        weather_raw = data['weather']
+        current = data['current']
+        address = data['address']
+        weather = WeatherView.transform_weather_data(weather_raw)
+        supplement_data = data['supplement']
+        transformed_supplement = {}
+        if supplement_data:
+            for date, forecasts in supplement_data['supplement'].items():
+                detailed_forecasts = [{'detailedForecast': period['detailedForecast'], 
+                                    'isDaytime': period['isDaytime']} for period in forecasts]
+                transformed_supplement[date] = detailed_forecasts
+                supplement = transformed_supplement
+        else:
+            supplement_data = {}
+            for date in weather_raw['date']:
+                supplement_data[date] = ["No supplemental data available for this location."]
+            supplement = supplement_data
+        geodata = data['geodata']
+        country_code = search['country_code']
+        timezone = search['timezone']
+        # 
+
+        result = { 'weather': weather, 
+                    'address': address, 
+                    'supplemental': supplement, 
+                    'geodata': geodata,
+                    'current': current,
+                    'country_code': country_code,
+                    'timezone': timezone
+                    }
+
+        return Response(result)
+    
+    
+    
+    def post(self, request, format=None):
+        user_id = request.data['user']
+        user = User.objects.get(id=user_id)
+        address = request.data['address']
+        nickname = request.data['nickname']
+        lat = request.data['lat']
+        lon = request.data['lon']
+        timezone = request.data['timezone']
+        country_code = request.data['country_code']
+        user_location = UserLocation(user=user, address=address, nickname=nickname, lat=lat, lon=lon, timezone=timezone, country_code=country_code)
+        user_location.save()
+        return Response({'status': 'success'})
+    
+    @staticmethod
+    def transform_weather_data(weather_data):
+        transformed_data = []
+        for i in range(len(weather_data['date'])):  
+            day_data = {}
+            for key, values in weather_data.items():
+                day_data[key] = values[i]  
+            transformed_data.append(day_data)
+        return transformed_data
+    
+class UserLocationView(APIView):
+    def get(self, request, format=None):
+        user_id = request.GET['user']
+        user = User.objects.get(id=user_id)
+        user_locations = UserLocation.objects.filter(user=user)
+        locations = []
+        for location in user_locations:
+            locations.append({
+                'locationId': location.id,
+                'address': location.address,
+                'nickname': location.nickname,
+                'lat': location.lat,
+                'lon': location.lon,
+                'formatted': location.address,
+                'timezone': location.timezone,
+                'country_code': location.country_code
+            })
+        return Response(locations)
+    
+    def delete(self, request, format=None):
+        location_id = request.data['location_id']
+        location = UserLocation.objects.get(id=location_id)
+        user = location.user
+        location.delete()
+        user_locations = UserLocation.objects.filter(user=user)
+        locations = []
+        for location in user_locations:
+            locations.append({
+                'locationId': location.id,
+                'address': location.address,
+                'nickname': location.nickname,
+                'lat': location.lat,
+                'lon': location.lon
+            })
+    
+        return Response({'status': 'success', 'data': locations})
+    
+    def put(self, request, format=None):
+        location_id = request.data['location_id']
+        nickname = request.data['nickname']
+        location = UserLocation.objects.get(id=location_id)
+        location.nickname = nickname
+        location.save()
+        return Response({'status': 'success'})
+
+##urls.py
+
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('', views.WeatherView.as_view(), name='weather'),
+    path('saved', views.UserLocationView.as_view(), name='weatherSaved'),
+]
+
+##forecast.py
+
+import openmeteo_requests
+import requests_cache
+import pandas as pd
+from retry_requests import retry
+import requests
+from requests.structures import CaseInsensitiveDict
+import os
+import time
+import json
+
+cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
+retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
+openmeteo = openmeteo_requests.Client(session = retry_session)
+
+def location(result):
+	lon = result['lon']
+	lat = result['lat']
+	timezone = result['timezone']
+	_address = result['formatted']
+	country_code = result['country_code']
+	geodata= {
+		"lat": lat,
+		"lon": lon
+	}
+	supplement = None
+	if country_code == "us":
+		location = (lat, lon)
+		supplement = supplemental(location)
+	location = (lat, lon, timezone)
+
+	weather = forecast(location)[0]
+	current = forecast(location)[1]
+	data = {"address": _address, "weather": weather, "supplement": supplement, "geodata": geodata, "current": current}
+	return data
+
+def supplemental(search):
+	lat = search[0]
+	long = search[1]
+	url = f'https://api.weather.gov/points/{lat},{long}'
+	get_weather = requests.get(f'https://api.weather.gov/points/{lat},{long}')
+	print(url)
+	time.sleep(1)
+	weather_json = get_weather.json()
+	forecast_url = weather_json['properties']['forecast']
+	print(forecast_url)
+	forecast = requests.get(forecast_url).json()
+	forecast = forecast['properties']['periods']
+	weather_by_date = {}
+	for period in forecast:
+		date_str = period['startTime'].split('T')[0]
+		if date_str not in weather_by_date:
+			weather_by_date[date_str] = []
+		weather_by_date[date_str].append(period)
+
+	weather_bundle = {
+		'supplement': weather_by_date,
+	}
+
+
+	return weather_bundle
+
+
+def forecast(search):
+	lattitude = search[0]
+	longitude = search[1]
+	timezone = search[2]
+	params={
+		"latitude": lattitude,
+		"longitude": longitude,
+		"current": ["temperature_2m", "relative_humidity_2m", "apparent_temperature", "precipitation", "cloud_cover", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m", "weather_code","is_day"],
+		"daily": ["weather_code", "temperature_2m_max", "temperature_2m_min", "apparent_temperature_max", "apparent_temperature_min", "precipitation_sum", "precipitation_hours", "precipitation_probability_max", "wind_speed_10m_max", "wind_gusts_10m_max"],
+		"forecast_hours": 6,
+		"temperature_unit": "fahrenheit",
+		"wind_speed_unit": "mph",
+		"precipitation_unit": "inch",
+		"timezone": timezone,
+	}
+	url = "https://api.open-meteo.com/v1/forecast"	
+	responses = openmeteo.weather_api(url, params=params)
+	response = responses[0]
+
+	current = response.Current()
+	current_temperature_2m = current.Variables(0).Value()
+	current_relative_humidity_2m = current.Variables(1).Value()
+	current_apparent_temperature = current.Variables(2).Value()
+	current_precipitation = current.Variables(3).Value()
+	current_cloud_cover = current.Variables(4).Value()
+	current_wind_speed_10m = current.Variables(5).Value()
+	current_wind_direction_10m = current.Variables(6).Value()
+	current_wind_gusts_10m = current.Variables(7).Value()
+	current_weather_code = current.Variables(8).Value()
+	current_is_day = current.Variables(9).Value()
+	# Assuming 'current' is a proper response object containing the current weather data
+	current_dict = {}
+
+	current_dict["temperature"] = current_temperature_2m
+	current_dict["relative_humidity"] = current_relative_humidity_2m
+	current_dict["feelsLike"] = current_apparent_temperature
+	current_dict["precipitation"] = current_precipitation
+	current_dict["cloud_cover"] = current_cloud_cover
+	current_dict["wind_speed"] = current_wind_speed_10m
+	current_dict["wind_direction"] = current_wind_direction_10m
+	current_dict["wind_gusts"] = current_wind_gusts_10m
+	current_dict["code"] = str(int(current_weather_code))
+	if current_is_day == 1:
+		current_dict["is_day"] = "day"
+	else:
+		current_dict["is_day"] = "night"
+
+	daily = response.Daily()
+	daily_weather_code = daily.Variables(0).ValuesAsNumpy()
+	daily_temperature_2m_max = daily.Variables(1).ValuesAsNumpy()
+	daily_temperature_2m_min = daily.Variables(2).ValuesAsNumpy()
+	daily_apparent_temperature_max = daily.Variables(3).ValuesAsNumpy()
+	daily_apparent_temperature_min = daily.Variables(4).ValuesAsNumpy()
+	daily_precipitation_sum = daily.Variables(5).ValuesAsNumpy()
+	daily_precipitation_hours = daily.Variables(6).ValuesAsNumpy()
+	daily_precipitation_probability_max = daily.Variables(7).ValuesAsNumpy()
+	daily_wind_speed_10m_max = daily.Variables(8).ValuesAsNumpy()
+	daily_wind_gusts_10m_max = daily.Variables(9).ValuesAsNumpy()
+	daily_data = {"date": pd.date_range(
+		start = pd.to_datetime(daily.Time(), unit = "s"),
+		end = pd.to_datetime(daily.TimeEnd(), unit = "s"),
+		freq = pd.Timedelta(seconds = daily.Interval()),
+		inclusive = "left"
+	)}
+	daily_data["weather_code"] = daily_weather_code
+	daily_data["temperature_2m_max"] = daily_temperature_2m_max
+	daily_data["temperature_2m_min"] = daily_temperature_2m_min
+	daily_data["apparent_temperature_max"] = daily_apparent_temperature_max
+	daily_data["apparent_temperature_min"] = daily_apparent_temperature_min
+	daily_data["precipitation_sum"] = daily_precipitation_sum
+	daily_data["precipitation_hours"] = daily_precipitation_hours
+	daily_data["precipitation_probability_max"] = daily_precipitation_probability_max
+	daily_data["wind_speed_10m_max"] = daily_wind_speed_10m_max
+	daily_data["wind_gusts_10m_max"] = daily_wind_gusts_10m_max
+
+
+	daily_dataframe = pd.DataFrame(data = daily_data)
+	daily_dict = daily_dataframe.to_dict()
+
+	# print(daily_dataframe, hourly_dataframe)
+
+	return daily_dict, current_dict
+
+
+##FRONTEND
+
+##ForecastPage.jsx
+
+import React, { useState, useEffect, useRef } from 'react';
+import { useParams } from 'react-router-dom';
+import { Container, Header, Segment, Card, Grid, Divider } from 'semantic-ui-react';
+import LocationLookup from '../../components/LocationLookup';
+import IsButton from '../../components/IsButton';
+import axios from 'axios';
+import weatherCodes from  './WeatherCode.json'
+import { useAuth } from '../../utils/AuthContext';
+import IsPortal from '../../components/IsPortal';
+import ForecastFavoritesForm from './ForecastFavoritesForm';
+import UserSavedLocations from './UserSavedLocations';
+
+
+const formatDate = (dateTimeStr) => {
+    return dateTimeStr.split('T')[0]; // Converts '2024-02-25T05:00:00' to '2024-02-25'
+};
+const combineData = (supplemental, weather) => {
+    const combined = {};
+    weather.forEach((day) => {
+        const dateKey = formatDate(day.date);
+        // Ensure there's at least a default forecast entry for each day
+        combined[dateKey] = {
+            date: day.date,
+            weather: {
+                high: day.temperature_2m_max,
+                low: day.temperature_2m_min,
+                feelsHigh: day.apparent_temperature_max,
+                feelsLow: day.apparent_temperature_min,
+                precipitationChance: day.precipitation_probability_max,
+                precipitationAmount: day.precipitation_sum,
+                windSpeed: day.wind_speed_10m_max,
+                windGust: day.wind_gusts_10m_max,
+                code: day.weather_code,
+                is_day: "day",
+            },
+            forecasts: supplemental[dateKey] || [{ detailedForecast: "Detailed forecast not available for locations outside of the US." }], // Provide a default message
+        };
+    });
+    return Object.values(combined); // Convert the combined object into an array
+};
+
+
+function degToCompass(num) {
+    const val = Math.floor((num / 22.5) + 0.5);
+    const arr = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+    return arr[(val % 16)];
+}
+
+
+const ForecastPage = () => {
+    const { location } = useParams();
+    const [selectedLocation, setSelectedLocation] = useState(location || '');
+    const locationDataRef = useRef({});
+    const [weatherData, setWeatherData] = useState([]);
+    const [supplementalData, setSupplementalData] = useState({});
+    const [address, setAddress] = useState('');
+    const [combinedData, setCombinedData] = useState([]);
+    const [weatherCardHidden, setWeatherCardHidden] = useState(true);
+	const [currentWeather, setCurrentWeather] = useState([]);
+    const [isPortalOpen, setIsPortalOpen] = useState(false);
+
+    const { loggedIn } = useAuth();
+
+    const handleSearch = () => {
+        console.log("Selected Location:", selectedLocation);
+        //clear out previous data
+        setWeatherData([]);
+        setSupplementalData({});
+        setAddress('');
+        setCombinedData([]);
+        setWeatherCardHidden(true);
+        console.log("Searching for:", locationDataRef.current);
+        axios.get(`${process.env.REACT_APP_API_URL}/api/weather`, {
+            params: {
+                lat: locationDataRef.current.coordinates.lat,
+                lon: locationDataRef.current.coordinates.lon,
+                country_code: locationDataRef.current.country_code,
+                formatted: locationDataRef.current.formatted,
+                timezone: locationDataRef.current.timezone
+            },
+        })
+        .then((response) => {
+            setWeatherData(response.data.weather || []);
+            setSupplementalData(response.data.supplemental || {}); // Note: Ensure this matches the key in your response
+            setAddress(response.data.address);
+            setWeatherCardHidden(false);
+			setCurrentWeather(response.data.current);
+            console.log((response.data))
+            let _address = response.data.address;
+            let _address_string = JSON.stringify(_address);
+            localStorage.setItem('address', _address_string);
+            localStorage.setItem('lat', JSON.stringify(response.data.geodata.lat));
+            localStorage.setItem('lon', JSON.stringify(response.data.geodata.lon));
+            localStorage.setItem('timezone', JSON.stringify(response.data.timezone));
+            localStorage.setItem('country_code', JSON.stringify(response.data.country_code));
+            console.log("Fetched Data:", response.data); // Log the fetched data for debugging
+            console.log(localStorage.getItem('lat'));
+            console.log(localStorage.getItem('lon'));
+            handleClose();
+        })
+        .catch((error) => {
+            console.error("Error:", error);
+        });
+    };
+
+
+    const handleFavoriteLoggedout = () => {
+        setIsPortalOpen(true);
+    };
+
+    const handleLocationSelect = (location) => {
+        // Update state with selected location
+        setSelectedLocation(location); 
+        setIsPortalOpen(false);
+        locationDataRef.current = {
+            coordinates: {
+                lat: location.lat,
+                lon: location.lon,
+            },
+            country_code: location.country_code,
+            formatted: location.formatted,
+            timezone: location.timezone,
+        };
+        
+        
+        handleSearch();
+    };
+    
+    const handleClose = () => {
+        setIsPortalOpen(false);
+    };
+
+
+
+    useEffect(() => {
+        if (selectedLocation) {
+            setSelectedLocation(selectedLocation);
+            locationDataRef.current = {
+                coordinates: {
+                    lat: selectedLocation.properties?.lat,
+                    lon: selectedLocation.properties?.lon,
+                },
+                country_code: selectedLocation.properties?.country_code,
+                formatted: selectedLocation.properties?.formatted,
+                timezone: selectedLocation.properties?.timezone.name,
+            };
+        }
+    }, [selectedLocation]);
+    useEffect(() => {
+        if (weatherData.length > 0 && Object.keys(supplementalData).length > 0){
+            const combined = combineData(supplementalData, weatherData);
+            setCombinedData(combined);
+            console.log("Combined Data:", combined);
+  
+        }
+    }, [weatherData, supplementalData]);
+    
+
+    return (
+        <Container>
+            <Segment textAlign='center' style={{ padding: '2em 0em', margin: 'auto'}} vertical className='flex-column align-items-center'>
+                {loggedIn &&
+                <Grid columns={2}>
+                    <Grid.Column align='left'>
+                    <Header as='h2'>Weather Forecast</Header>
+                    </Grid.Column>
+                    <Grid.Column align='right'>
+                        <IsPortal
+                            label='Saved Locations'
+                            open={isPortalOpen}
+                            onClose={() => setIsPortalOpen(false)}
+                            header="Saved Locations"
+                            
+                        >
+                            <UserSavedLocations onLocationSelect={handleLocationSelect}/>
+                        </IsPortal>
+                    </Grid.Column>
+                </Grid>
+
+            }
+            {!loggedIn &&
+                <Header as='h2'>Weather Forecast</Header>}
+                <LocationLookup
+                setSelectedLocation={setSelectedLocation} 
+                />
+                <Divider></Divider>
+                <IsButton onClick={handleSearch} label="Search" className="searchButton"/>
+            </Segment>
+			<Segment hidden={weatherCardHidden}>
+            <Grid columns={2}>
+                <Grid.Column >
+			<Header as='h3'>{address}</Header>
+                </Grid.Column>
+                <Grid.Column  align='right'>
+                    {loggedIn && 
+                    <IsPortal label='Add to Favorites' open={isPortalOpen} onClose={() => setIsPortalOpen(false)} header="Add to Favorites" >
+                        <ForecastFavoritesForm onSubmit={(data) => console.log(data)} address={address}/>
+                    </IsPortal>
+                    }
+                    {!loggedIn && 
+                    <IsPortal onClick={handleFavoriteLoggedout} open={isPortalOpen} onClose={() => setIsPortalOpen(false)} header="Login Required" label="Add to Favorites" >
+                        <p>You must be logged in to add favorites.</p>
+                    </IsPortal>
+                    }
+                </Grid.Column>
+
+            </Grid>
+				<Card fluid className='currentWeatherCard'>
+					<Card.Content>
+						<Card.Header>Current Weather</Card.Header>
+					</Card.Content>
+					<Grid centered celled columns={3}>
+						<Grid.Column verticalAlign="middle">
+					<Card.Content>
+						<Card.Description>Temperature: {parseInt(currentWeather.temperature)}°F</Card.Description>
+						<Card.Description>Feels Like: {parseInt(currentWeather.feelsLike)}°F</Card.Description>
+						<Card.Description>Cloud Coverage: {parseInt(currentWeather.cloud_cover)}%</Card.Description>
+						<Card.Description>Humidity: {parseInt(currentWeather.relative_humidity)}%</Card.Description>
+					</Card.Content>
+					</Grid.Column>
+					<Grid.Column verticalAlign="middle">
+					<Card.Content>
+						<Card.Description>Wind Speed: {parseInt(currentWeather.wind_speed)} mph</Card.Description>
+						<Card.Description>Wind Direction: {degToCompass(currentWeather.wind_direction)} </Card.Description>
+						<Card.Description>Wind Gust: {parseInt(currentWeather.wind_gusts)} mph</Card.Description>
+						</Card.Content>
+					</Grid.Column>
+					<Grid.Column verticalAlign="middle">
+					<Card.Content>
+						<Card.Meta>
+							<img src={weatherCodes[currentWeather.code]?.[currentWeather.is_day].image || 'default_image_url'} alt="Weather icon" />
+							{weatherCodes[currentWeather.code]?.[currentWeather.is_day].description || 'No description available'}
+						</Card.Meta>
+					</Card.Content>
+					</Grid.Column>
+					</Grid>
+				</Card>
+			</Segment>
+            <Segment hidden={weatherCardHidden}>
+    <Grid padded columns={2} divided>
+        {combinedData.map((day, index) => (
+            <Grid.Row key={index}>
+                <Grid.Column>
+                    <Card fluid>
+                        <Grid centered celled columns={2}>
+                            <Grid.Column verticalAlign="middle">
+                                <Card.Content>
+                                    <Card.Header className='dailyWeatherCardHeader'>
+                                        {new Date(day.date).toLocaleDateString()}
+                                    </Card.Header>
+                                </Card.Content>
+                            </Grid.Column>
+                            <Grid.Column verticalAlign="left">
+                                <Card.Content>
+                                    <Card.Meta>
+                                        <img src={weatherCodes[day.weather.code]?.[day.weather.is_day].image || 'default_image_url'} alt="Weather icon" />
+                                        {weatherCodes[day.weather.code]?.[day.weather.is_day].description || 'No description available'}
+                                    </Card.Meta>
+                                </Card.Content>
+                            </Grid.Column>
+                        </Grid>
+                        <Grid centered celled columns={2}>
+                            <Grid.Column verticalAlign="middle">
+                                <Card.Content>
+                                    <Card.Description>Hi: {parseInt(day.weather.high)}°F</Card.Description>
+                                    <Card.Description>Lo: {parseInt(day.weather.low)}°F</Card.Description>
+                                    <Card.Description>Chance of Precipitation: {day.weather.precipitationChance}%</Card.Description>
+                                    <Card.Description>Precipitation Amount: {parseFloat(day.weather.precipitationAmount).toFixed(2)}&ldquo;</Card.Description>
+                                </Card.Content>
+                            </Grid.Column>
+                            <Grid.Column verticalAlign='middle'>
+                                <Card.Content>
+                                    <Card.Description>Feels Like Hi: {parseInt(day.weather.feelsHigh)}°F</Card.Description>
+                                    <Card.Description>Feels Like Lo: {parseInt(day.weather.feelsLow)}°F</Card.Description>
+                                    <Card.Description>Wind Speed: {parseInt(day.weather.windSpeed)} mph</Card.Description>
+                                    <Card.Description>Wind Gust: {parseInt(day.weather.windGust)} mph</Card.Description>
+                                </Card.Content>
+                            </Grid.Column>
+                        </Grid>
+                    </Card>
+                </Grid.Column>
+                <Grid.Column>
+                    {day.forecasts.length > 0 ? day.forecasts.map((forecast, idx) => (
+                        <Card fluid key={idx}>
+                            <Card.Content>
+                                <Card.Description>
+                                    {forecast.detailedForecast}
+                                </Card.Description>
+                            </Card.Content>
+                        </Card>
+                    )) : <Card fluid>
+                            <Card.Content>
+                                <Card.Description>
+                                    Detailed forecast is not available for this location.
+                                </Card.Description>
+                            </Card.Content>
+                        </Card>
+                    }
+                </Grid.Column>
+                <Divider />
+            </Grid.Row>
+        ))}
+    </Grid>
+</Segment>
+
+        </Container>
+    );
+};
+
+export default ForecastPage;
+
+
+##ForecastFavoritesForm.jsx
+
+import React from 'react';
+import {
+    FormInput,
+    FormGroup,
+    Form,
+    Segment,
+    Button
+} from 'semantic-ui-react';
+import { useState } from 'react';
+import PropTypes from 'prop-types';
+import axios from 'axios';
+
+const FavoritesForm = ({onSubmit, handleClose}) => {
+
+    FavoritesForm.propTypes = {
+        onSubmit: PropTypes.func.isRequired,
+        address: PropTypes.string.isRequired,
+        lat: PropTypes.string.isRequired,
+        lon: PropTypes.string.isRequired,
+        timezone: PropTypes.string.isRequired,
+        country_code: PropTypes.string.isRequired,
+        handleClose: PropTypes.func.isRequired,
+    };
+    const [nickname, setNickname] = useState('');
+    const user = JSON.parse(localStorage.getItem('userId')) || '';
+    const address = JSON.parse(localStorage.getItem('address')) || '';
+    const lat = JSON.parse(localStorage.getItem('lat')) || '';
+    const lon = JSON.parse(localStorage.getItem('lon')) || '';
+    const timezone = JSON.parse(localStorage.getItem('timezone')) || '';
+    const country_code = JSON.parse(localStorage.getItem('country_code')) || '';
+    console.log('user:', user, 'address:', address);
+
+    const handleSubmit = (e) => {
+        e.preventDefault();
+        axios.post(
+            `${process.env.REACT_APP_API_URL}/api/weather/`,
+            {address, nickname, user, lat, lon, timezone, country_code},
+        ).then((response) => {
+            onSubmit(response.data);
+            handleClose();
+        }).catch((error) => {
+            console.error('Failed to add favorite:', error);
+        }
+        );
+        
+    };
+
+    return (
+        <Segment>
+            <Form onSubmit={(handleSubmit)}>
+                <FormGroup>
+                    <FormInput
+                        label="Nickname"
+                        placeholder={address}
+                        value={nickname}
+                        onChange={(e) => setNickname(e.target.value)}
+                    />
+                </FormGroup>
+                <input type="hidden" value={user} />
+                <input type="hidden" value={address} />
+                <input type="hidden" value={lat} />
+                <input type="hidden" value={lon} />
+
+                <Button type="submit">Add Favorite</Button>
+            </Form>
+        </Segment>
+    );
+}
+
+export default FavoritesForm;
+
+
+
+##UserSavedLocations.jsx
+
+import React from 'react';
+import {useEffect} from 'react';
+import {
+    Segment,
+    Button
+} from 'semantic-ui-react';
+import { useState } from 'react';
+// import PropTypes from 'prop-types';
+import axios from 'axios';
+import PropTypes from 'prop-types';
+
+const UserSavedLocations = ({onLocationSelect, handleClose}) => {
+    UserSavedLocations.propTypes = {
+        onLocationSelect: PropTypes.func.isRequired,
+        handleClose: PropTypes.func.isRequired,
+    };
+
+
+    const [userLocations, setUserLocations] = useState([]);
+    const user = JSON.parse(localStorage.getItem('userId')) || '';
+
+    
+    useEffect(()=>{ axios.get(`${process.env.REACT_APP_API_URL}/api/weather/saved`, {
+        params: {
+            user: user
+        }
+    }).then((response) => {
+        console.log(response.data);
+        setUserLocations(response.data);
+    }).catch((error) => {
+        console.error('Failed to get favorites:', error);
+    });
+    }, [user]);
+
+    const handleGetForecast = (location) => {
+        console.log('Get forecast for:', location);
+        onLocationSelect({...location});
+        handleClose();
+    }
+
+    const handleDeleteLocation = (location) => {
+        console.log('Delete location:', location);
+        console.log(location.locationId)
+        axios.delete(`${process.env.REACT_APP_API_URL}/api/weather/saved`, {
+            data: {
+                'location_id': location.locationId,
+            }
+        })
+            .then((response) => {
+                // Assuming your backend returns an object with a 'data' key containing the locations array
+                if(response.data.status === 'success' && Array.isArray(response.data.data)) {
+                    setUserLocations(response.data.data); // Update state with the new locations
+                } else {
+                    throw new Error('Invalid response data'); // Handle unexpected response format
+                }
+            })
+            .catch((error) => {
+                console.error('Failed to delete location:', error);
+            });
+        };
+
+
+    return (
+        <Segment>
+            <h2>Your Saved Locations</h2>
+            <ul>
+                {userLocations.map((location) => (
+                    <li key={location.id} style={{display:'flex', justifyContent:'space-between'}}>
+                        <h3>
+                        {location.nickname}
+                        </h3>
+                        <div>
+                        <Button onClick={() => handleGetForecast(location)}>Get Forecast</Button>
+                        <Button onClick={() => handleDeleteLocation(location)}>Delete</Button>
+                        </div>
+                    </li>
+
+                ))}
+                
+            </ul>
+        </Segment>
+    )
+
+}
+
+
+export default UserSavedLocations;
