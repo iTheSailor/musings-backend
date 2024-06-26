@@ -15,40 +15,59 @@ class UserWatchlist(models.Model):
     class Meta:
         unique_together = ('user', 'symbol')
 
-class UserWallet(models.Model):
-    #give user 100 thousand dollars to start with, dont allow negative balance
+class UserPlayWallet(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)
-    balance = models.DecimalField(max_digits=10, decimal_places=2, default=100000)
+    wallet_name = models.CharField(max_length=50)
+    balance = models.DecimalField(max_digits=15, decimal_places=2, default=100000)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.user.username
+        return self.wallet_name
+    
+    class Meta:
+        unique_together = ('user', 'wallet_name')
 
-class UserTransaction(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+class UserPlayStock(models.Model):
+    wallet = models.ForeignKey(UserPlayWallet, on_delete=models.CASCADE)
     symbol = models.CharField(max_length=10)
     quantity = models.IntegerField()
-    price = models.DecimalField(max_digits=10, decimal_places=2)
-    transaction_type = models.CharField(max_length=10)
+    bought_price = models.DecimalField(max_digits=15, decimal_places=2)
+    current_value = models.DecimalField(max_digits=15, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.symbol
+
+    class Meta:
+        unique_together = ('wallet', 'symbol')
+
+class UserWalletHistory(models.Model):
+    wallet = models.ForeignKey(UserPlayWallet, on_delete=models.CASCADE)
+    balance = models.DecimalField(max_digits=15, decimal_places=2)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.wallet.wallet_name
     
     class Meta:
-        unique_together = ('user', 'symbol', 'transaction_type')
+        ordering = ['-created_at']
 
-class UserPortfolio(models.Model):
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+class UserStockHistory(models.Model):
+    wallet = models.ForeignKey(UserPlayWallet, on_delete=models.CASCADE)
     symbol = models.CharField(max_length=10)
     quantity = models.IntegerField()
+    bought_price = models.DecimalField(max_digits=15, decimal_places=2)
+    sold_price = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
+    total_spending = models.DecimalField(max_digits=15, decimal_places=2)
+    current_value = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
+    total_sale_value = models.DecimalField(max_digits=15, decimal_places=2, blank=True, null=True)
+    change_percentage = models.DecimalField(max_digits=5, decimal_places=2, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return self.symbol
     
     class Meta:
-        unique_together = ('user', 'symbol')
+        ordering = ['-created_at']
