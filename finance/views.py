@@ -181,19 +181,27 @@ def sell_stock_from_wallet(request):
             UserStockHistory.objects.create(wallet=wallet, symbol=symbol, quantity=quantity, bought_price=stock.bought_price, sold_price=sold_price, total_sale_value=total_sale_value, change_percentage=change_percentage)
         
         return JsonResponse({'message': 'Stock sold from wallet successfully', 'success': True})
-    
+
+from django.db.models import Sum, F
+
+@csrf_exempt
 def get_wallets(request):
     if request.method == 'GET':
         user_id = request.GET.get('user_id')
         user = User.objects.get(id=user_id)
-        wallets = UserPlayWallet.objects.filter(user=user)
+        wallets = UserPlayWallet.objects.filter(user=user).annotate(
+            current_value=F('balance') + Sum('userplaystock__current_value')
+        )
         wallets_data = [{
             'wallet_id': wallet.id,
             'wallet_name': wallet.wallet_name,
-            'balance': wallet.balance
+            'balance': wallet.balance,
+            'current_value': wallet.current_value,
+            'stocks': list(wallet.userplaystock_set.values('symbol', 'quantity', 'bought_price', 'current_value'))
         } for wallet in wallets]
         
         return JsonResponse({'wallets': wallets_data, 'success': True})
+
 
 def get_wallet_details(request):
     if request.method == 'GET':
