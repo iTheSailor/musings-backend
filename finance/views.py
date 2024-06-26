@@ -1,3 +1,4 @@
+from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render
 from django.http import JsonResponse
 from .models import UserWatchlist
@@ -40,6 +41,7 @@ def get_watchlist(request):
         }
     return JsonResponse(data)
 
+@csrf_exempt
 def add_watchlist(request):
     data = {}
     if request.method == 'POST':
@@ -52,6 +54,7 @@ def add_watchlist(request):
 
     return JsonResponse(data)
 
+@csrf_exempt
 def remove_watchlist(request):
     data = {}
     if request.method == 'POST':

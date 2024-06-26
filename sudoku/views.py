@@ -1,7 +1,10 @@
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
 from django.shortcuts import render
 from django.http import JsonResponse
 from rest_framework.response import Response
 from rest_framework.generics import RetrieveUpdateAPIView
+from rest_framework.decorators import api_view, permission_classes
 from .models import Sudoku
 from .serializers import SudokuSerializer
 from django.contrib.auth.models import User
@@ -9,8 +12,12 @@ import json
 from . import sudoku_logic
 
 # Create your views here.
-class GenerateSudokuView(RetrieveUpdateAPIView):
-    def get(self, request, format=None):
+
+# class GenerateSudokuView(RetrieveUpdateAPIView):
+@api_view(['GET','PUT'])
+@csrf_exempt
+def main_sudoku(request):
+    if request.method == 'GET':
         try:
             userid = request.GET['userid']
             user = User.objects.get(id=userid)
@@ -35,16 +42,18 @@ class GenerateSudokuView(RetrieveUpdateAPIView):
                  'time': game.time})
         else:
             return Response({'status': 'failure'})
-        
-    def put(self, request, format=None):
-        data = json.loads(request.body)
-        sudoku_id = data['sudoku_id']
-        time = data['time']
-        sudoku = Sudoku.objects.get(id=sudoku_id)
-        sudoku.time = time
-        sudoku.save()
-        return Response({'status': 'success'})
 
+    if request.method == 'PUT':
+        try:
+            data=request.data
+            sudoku_id=data.get('sudoku_id')
+            time=data.get('time')
+            sudoku = Sudoku.objects.get(id=sudoku_id)
+            sudoku.time = time
+            sudoku.save()
+            return Response({'status': 'success'})
+        except Exception as e:
+            return Response({'status': 'failure to save time'})
 
 def create_sudoku_game(request):
     data=request.GET
@@ -69,6 +78,7 @@ def get_user_games(request):
     else:
         return JsonResponse({'error': 'User not found or no games available'}, status=404)
 
+@csrf_exempt
 def delete_game(request):
     data= json.loads(request.body)
     gameid = data['gameid']
@@ -79,7 +89,8 @@ def delete_game(request):
         return JsonResponse({'status': 'success'})
     else:
         return JsonResponse({'status': 'failure'}, status=404)
-    
+
+@csrf_exempt
 def save_game(request):
     data = json.loads(request.body)
     gameid = data['gameid']
@@ -102,6 +113,7 @@ def check_sudoku_solution(request):
     else:
         return JsonResponse({'status': 'failure'}, status=404)
 
+@csrf_exempt
 def give_up(request):
     data = json.loads(request.body)
     gameid = data['gameid']
