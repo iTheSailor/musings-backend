@@ -8,6 +8,7 @@ from .forms import UserWatchlistForm
 from django.contrib.auth.models import User
 import json
 import pandas as pd
+from icecream import ic
 
 ### stock views
 def get_stock(request):
@@ -98,6 +99,8 @@ def get_watchlist_group(request):
 ### wallet views
 from decimal import Decimal
 from django.db import transaction
+from django.db.models import Sum, F, Value as V
+from django.db.models.functions import Coalesce
 
 """
 Explanation:
@@ -181,46 +184,84 @@ def sell_stock_from_wallet(request):
             UserStockHistory.objects.create(wallet=wallet, symbol=symbol, quantity=quantity, bought_price=stock.bought_price, sold_price=sold_price, total_sale_value=total_sale_value, change_percentage=change_percentage)
         
         return JsonResponse({'message': 'Stock sold from wallet successfully', 'success': True})
-
-from django.db.models import Sum, F
-
 @csrf_exempt
 def get_wallets(request):
     if request.method == 'GET':
         user_id = request.GET.get('user_id')
         user = User.objects.get(id=user_id)
         wallets = UserPlayWallet.objects.filter(user=user).annotate(
-            current_value=F('balance') + Sum('userplaystock__current_value')
+            current_value=F('balance')
         )
-        wallets_data = [{
-            'wallet_id': wallet.id,
-            'wallet_name': wallet.wallet_name,
-            'balance': wallet.balance,
-            'current_value': wallet.current_value,
-            'stocks': list(wallet.userplaystock_set.values('symbol', 'quantity', 'bought_price', 'current_value'))
-        } for wallet in wallets]
+
+        wallets_data = []
+        for wallet in wallets:
+            wallet_data = {
+                'wallet_id': wallet.id,
+                'wallet_name': wallet.wallet_name,
+                'balance': str(wallet.balance),
+                'stocks': [],
+            }
+            total_stock_value = 0.0
+            for stock in wallet.userplaystock_set.all():
+                ticker = yf.Ticker(stock.symbol)
+                history = ticker.history(period='1d')
+                if not history.empty:
+                    current_price = float(history.iloc[-1]['Close'])
+                    current_value = current_price * stock.quantity
+                    total_stock_value += current_value
+                    stocks = {
+                        'symbol': stock.symbol,
+                        'quantity': stock.quantity,
+                        'bought_price': str(stock.bought_price),
+                        'current_price': str(current_price),
+                        'current_value': str(current_value),
+                    }
+                    wallet_data['stocks'].append(stocks)
+                else:
+                    print(f"No price data for {stock.symbol}")
+
+            wallet_data['current_value'] = str(float(wallet.balance) + total_stock_value)
+            wallets_data.append(wallet_data)
+            ic(wallets_data)
         
         return JsonResponse({'wallets': wallets_data, 'success': True})
-
 
 def get_wallet_details(request):
     if request.method == 'GET':
         wallet_id = request.GET.get('wallet_id')
         wallet = UserPlayWallet.objects.get(id=wallet_id)
         stocks = UserPlayStock.objects.filter(wallet=wallet)
-        stocks_data = [{
-            'symbol': stock.symbol,
-            'quantity': stock.quantity,
-            'bought_price': stock.bought_price,
-            'current_value': stock.current_value
-        } for stock in stocks]
-        
-        return JsonResponse({'wallet': {
+        wallet_data = {
             'wallet_id': wallet.id,
             'wallet_name': wallet.wallet_name,
-            'balance': wallet.balance,
-            'stocks': stocks_data
-        }, 'success': True})
+            'balance': str(wallet.balance),
+            'stocks': [],
+        }
+        total_stock_value = 0.0
+        stocks_data = []
+        for stock in stocks:
+            ticker = yf.Ticker(stock.symbol)
+            history = ticker.history(period='1d')
+            if not history.empty:
+                    current_price = float(history.iloc[-1]['Close'])
+                    current_value = current_price * stock.quantity
+                    total_stock_value += current_value
+                    stock = {
+                        'symbol': stock.symbol,
+                        'quantity': stock.quantity,
+                        'bought_price': str(stock.bought_price),
+                        'current_price': str(current_price),
+                        'current_value': str(current_value),
+                    }
+                    stocks_data.append(stock)
+            else:
+                print(f"No price data for {stock.symbol}")
+        
+        wallet_data['current_value'] = str(float(wallet.balance) + total_stock_value)
+        wallet_data['stocks'] = stocks_data
+
+        return JsonResponse({'wallet': wallet_data, 'success': True})
+
 
 def get_wallet_history(request):
     if request.method == 'GET':
