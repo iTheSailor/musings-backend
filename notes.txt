@@ -11,3 +11,8 @@ good potential is https://www.geoapify.com.
 
 would love to integrate their reachability feature 
 https://apidocs.geoapify.com/playground/geometry/
+
+
+///
+
+new notes
