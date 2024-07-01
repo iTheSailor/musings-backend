@@ -14,9 +14,6 @@ SECRET_KEY = os.environ.get('SECRET_KEY', default='your secret key')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', default=True)
 
-ALLOWED_HOSTS = ['3.144.15.12', 'api.ibrahimsalir.com', 'musings-frontend.onrender.com', 'www.ibrahimsalir.com', 'ibrahimsalir.com']
-
-SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # Application definition
 INSTALLED_APPS = [
@@ -95,6 +92,12 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+
+ALLOWED_HOSTS = ['3.144.15.12', 'api.ibrahimsalir.com', 'musings-frontend.onrender.com', 'www.ibrahimsalir.com', 'ibrahimsalir.com', 'localhost']
+
+if DEBUG:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 # CORS settings
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -116,6 +119,7 @@ CORS_ALLOWED_ORIGINS = [
     'https://musings-frontend.onrender.com',
     'https://www.ibrahimsalir.com',
     'https://ibrahimsalir.com',
+    'http://localhost:3000',
 ]
 
 # CSRF settings
@@ -124,6 +128,7 @@ CSRF_TRUSTED_ORIGINS = [
     'https://musings-frontend.onrender.com',
     'https://www.ibrahimsalir.com',
     'https://ibrahimsalir.com',
+    'http://localhost:3000',
 ]
 
 CSRF_COOKIE_HTTPONLY = False  # Make it accessible via JavaScript
