@@ -2,6 +2,7 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    # Stock URLs
     path('get_stock', views.get_stock, name='get_stock'),
     path('get_watchlist', views.get_watchlist, name='get_watchlist'),
     path('add_watchlist', views.add_watchlist, name='add_watchlist'),
@@ -18,7 +19,4 @@ urlpatterns = [
     path('get_stock_history', views.get_stock_history, name='get_stock_history'),
     path('rename_wallet', views.rename_wallet, name='rename_wallet'),
     path('delete_wallet', views.delete_wallet, name='delete_wallet'),
-    path('add_stock_to_wallet', views.add_stock_to_wallet, name='add_stock_to_wallet'),
-    path('sell_stock_from_wallet', views.sell_stock_from_wallet, name='sell_stock_from_wallet'),
-
 ]

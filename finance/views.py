@@ -9,6 +9,7 @@ from django.contrib.auth.models import User
 import json
 import pandas as pd
 from icecream import ic
+from datetime import datetime, timedelta
 
 ### stock views
 def get_stock(request):
@@ -145,12 +146,36 @@ def add_stock_to_wallet(request):
         with transaction.atomic():
             wallet.balance -= total_spent
             wallet.save()
-            UserPlayStock.objects.create(wallet=wallet, symbol=symbol, quantity=quantity, bought_price=bought_price, current_value=total_spent)
-            UserWalletHistory.objects.create(wallet=wallet, balance=wallet.balance)
-            UserStockHistory.objects.create(wallet=wallet, symbol=symbol, quantity=quantity, bought_price=bought_price, total_spending=total_spent, current_value=total_spent)
+            stock, created = UserPlayStock.objects.get_or_create(wallet=wallet, symbol=symbol, defaults={
+                'quantity': quantity,
+                'bought_price': bought_price,
+                'current_value': total_spent
+            })
+            if not created:
+                stock.quantity += quantity
+                stock.current_value += total_spent
+                stock.save()
+            
+            # Add an entry to the wallet history with the current stock values
+            total_stock_value = sum(
+                s.current_value for s in wallet.userplaystock_set.all()
+            )
+            UserWalletHistory.objects.create(
+                wallet=wallet, 
+                balance=wallet.balance, 
+                stocks_value=total_stock_value
+            )
+            
+            UserStockHistory.objects.create(
+                wallet=wallet, 
+                symbol=symbol, 
+                quantity=quantity, 
+                bought_price=bought_price, 
+                total_spending=total_spent, 
+                current_value=total_spent
+            )
         
         return JsonResponse({'message': 'Stock added to wallet successfully', 'success': True})
-
 @csrf_exempt
 def sell_stock_from_wallet(request):
     if request.method == 'POST':
@@ -180,10 +205,30 @@ def sell_stock_from_wallet(request):
             
             wallet.balance += total_sale_value
             wallet.save()
-            UserWalletHistory.objects.create(wallet=wallet, balance=wallet.balance)
-            UserStockHistory.objects.create(wallet=wallet, symbol=symbol, quantity=quantity, bought_price=stock.bought_price, sold_price=sold_price, total_sale_value=total_sale_value, change_percentage=change_percentage)
+            
+            # Add an entry to the wallet history with the current stock values
+            total_stock_value = sum(
+                s.current_value for s in wallet.userplaystock_set.all()
+            )
+            UserWalletHistory.objects.create(
+                wallet=wallet, 
+                balance=wallet.balance, 
+                stocks_value=total_stock_value
+            )
+            
+            UserStockHistory.objects.create(
+                wallet=wallet,
+                symbol=symbol,
+                quantity=-quantity,
+                bought_price=stock.bought_price,
+                sold_price=sold_price,
+                total_sale_value=total_sale_value,
+                change_percentage=change_percentage
+            )
         
         return JsonResponse({'message': 'Stock sold from wallet successfully', 'success': True})
+
+
 @csrf_exempt
 def get_wallets(request):
     if request.method == 'GET':
@@ -261,17 +306,53 @@ def get_wallet_details(request):
         wallet_data['stocks'] = stocks_data
 
         return JsonResponse({'wallet': wallet_data, 'success': True})
+def get_closest_stock_value(ticker, date):
+    ic(date)
+    date = str(date)
+    ic(type(date))
+    target_date = datetime.strptime(date, '%Y-%m-%d').replace(tzinfo=None)
+    target_date = target_date.date()
+    ic(target_date)
+    history = ticker.history(period="max")
+    stock_price_at_date = history.loc[history.index.date == target_date]
+    ic(stock_price_at_date)
+    
+    if not stock_price_at_date.empty:
+        return stock_price_at_date.iloc[0]['Close']
+    else:
+        return None
 
-
+def get_stock_value_at_date(wallet, date):
+    stock_value = 0
+    for stock in wallet.userplaystock_set.all():
+        ticker = yf.Ticker(stock.symbol)
+        stock_price_at_date = get_closest_stock_value(ticker, date)
+        if stock_price_at_date is not None:
+            stock_value += stock.quantity * stock_price_at_date
+    return stock_value
+@csrf_exempt
 def get_wallet_history(request):
     if request.method == 'GET':
         wallet_id = request.GET.get('wallet_id')
-        history = UserWalletHistory.objects.filter(wallet_id=wallet_id).order_by('-created_at')
-        history_data = [{
-            'balance': record.balance,
-            'created_at': record.created_at
-        } for record in history]
-        
+        wallet = UserPlayWallet.objects.get(id=wallet_id)
+        history = UserWalletHistory.objects.filter(wallet=wallet).order_by('created_at')
+
+        history_data = []
+        previous_balance = None
+
+        for entry in history:
+            date = entry.created_at.date()
+            if previous_balance is None:
+                stock_value = 0
+            else:
+                stock_value = get_stock_value_at_date(wallet, date)
+            history_data.append({
+                'created_at': entry.created_at.isoformat(),
+                'balance': float(entry.balance),
+                'stocks_value': entry.stocks_value,  # Use stored stocks_value
+            })
+            previous_balance = entry.balance
+
         return JsonResponse({'history': history_data, 'success': True})
 
 def get_stock_history(request):
