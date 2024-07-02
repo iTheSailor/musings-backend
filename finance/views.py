@@ -349,7 +349,7 @@ def get_wallet_history(request):
             history_data.append({
                 'created_at': entry.created_at.isoformat(),
                 'balance': float(entry.balance),
-                'stocks_value': entry.stocks_value,  # Use stored stocks_value
+                'stocks_value': float( entry.stocks_value),  # Use stored stocks_value
             })
             previous_balance = entry.balance
 
